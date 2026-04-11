@@ -104,11 +104,13 @@ pub fn verify<T>(
         }
     }
 
-    // TODO: switch to mime::APPLICATION_DNS when that stabilizes
-    match request.headers().get(CONTENT_TYPE).map(|v| v.to_str()) {
-        Some(Ok(ctype)) if ctype == MIME_APPLICATION_DNS => {}
-        _ => return Err("unsupported content type".into()),
-    };
+    // Content-Type is required for POST but not for GET (no request body)
+    if request.method() != http::Method::GET {
+        match request.headers().get(CONTENT_TYPE).map(|v| v.to_str()) {
+            Some(Ok(ctype)) if ctype == MIME_APPLICATION_DNS => {}
+            _ => return Err("unsupported content type".into()),
+        };
+    }
 
     // TODO: switch to mime::APPLICATION_DNS when that stabilizes
     match request.headers().get(ACCEPT).map(|v| v.to_str()) {
