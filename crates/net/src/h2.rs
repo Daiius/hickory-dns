@@ -435,10 +435,31 @@ where
     }
 
     match *request.method() {
-        Method::GET => Err(format!("GET unimplemented: {}", request.method()).into()),
+        Method::GET => message_from_get(request.uri()),
         Method::POST => message_from_post(request.into_body(), content_length).await,
         _ => Err(format!("bad method: {}", request.method()).into()),
     }
+}
+
+/// Deserialize the message from a GET request's query parameter
+///
+/// ```text
+/// RFC 8484, Section 4.1:
+///
+/// When using the GET method, the data payload MUST be encoded with
+/// base64url [RFC4648] and then provided as a variable named "dns" in
+/// the URI Template.
+/// ```
+fn message_from_get(uri: &http::Uri) -> Result<BytesMut, NetError> {
+    let query = uri.query().ok_or_else(|| NetError::from("missing query string in GET request"))?;
+    let dns_param = query
+        .split('&')
+        .find_map(|param| param.strip_prefix("dns="))
+        .ok_or_else(|| NetError::from("missing 'dns' parameter in GET request"))?;
+    let bytes = data_encoding::BASE64URL_NOPAD
+        .decode(dns_param.as_bytes())
+        .map_err(|e| NetError::from(format!("base64url decode error: {e}")))?;
+    Ok(BytesMut::from(bytes.as_slice()))
 }
 
 /// Deserialize the message from a POST message
@@ -741,6 +762,37 @@ mod tests {
 
         let msg_from_post = Message::from_vec(bytes.as_ref()).expect("bytes failed");
         assert_eq!(message, msg_from_post);
+    }
+
+    #[tokio::test]
+    async fn test_from_get() {
+        subscribe();
+        let message = Message::query();
+        let msg_bytes = message.to_vec().unwrap();
+
+        // Encode the DNS message as base64url without padding
+        let encoded = data_encoding::BASE64URL_NOPAD.encode(&msg_bytes);
+
+        // Build a GET request with the dns query parameter
+        let uri = format!("https://ns.example.com/dns-query?dns={encoded}");
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .version(http::Version::HTTP_2)
+            .header(http::header::ACCEPT, crate::http::MIME_APPLICATION_DNS)
+            .body(TestBytesStream(vec![]))
+            .unwrap();
+
+        let bytes = message_from(
+            Some(Arc::from("ns.example.com")),
+            "/dns-query".into(),
+            request,
+        )
+        .await
+        .unwrap();
+
+        let msg_from_get = Message::from_vec(bytes.as_ref()).expect("bytes failed");
+        assert_eq!(message, msg_from_get);
     }
 
     #[derive(Debug)]
